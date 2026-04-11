@@ -1,0 +1,23 @@
+{
+  "name": "orchids-nesiha-dawah-bot",
+  "version": "1.0.0",
+  "description": "Nesiha Da'wah & Irshad Telegram Bot with Admin Dashboard",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:client": "cd client && npx vite --port 5173",
+    "build": "cd client && npx vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^11.7.0",
+    "concurrently": "^9.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.3",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
