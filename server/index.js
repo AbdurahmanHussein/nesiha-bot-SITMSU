@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const { getDb } = require('./db');
+const { initDb, queryOne, execute } = require('./db');
 const { initBot } = require('./bot');
 const { requireAuth } = require('./middleware/auth');
 
@@ -12,9 +12,6 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
-
-// Initialize database
-getDb();
 
 // Public API Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -40,21 +37,34 @@ app.get('*', (req, res) => {
   }
 });
 
-// Start bot if token exists
-const db = getDb();
-const tokenRow = db.prepare("SELECT value FROM settings WHERE key = 'bot_token'").get();
-const envToken = process.env.BOT_TOKEN;
-const token = envToken || tokenRow?.value;
+// Async startup
+async function start() {
+  // Initialize database schema
+  await initDb();
 
-if (token && token.length > 10) {
-  if (envToken && envToken !== tokenRow?.value) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('bot_token', ?)").run(envToken);
+  // Start bot if token exists
+  const tokenRow = await queryOne("SELECT value FROM settings WHERE key = 'bot_token'");
+  const envToken = process.env.BOT_TOKEN;
+  const token = envToken || tokenRow?.value;
+
+  if (token && token.length > 10) {
+    if (envToken && envToken !== tokenRow?.value) {
+      await execute(
+        "INSERT INTO settings (key, value) VALUES ('bot_token', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+        [envToken]
+      );
+    }
+    initBot(token);
+  } else {
+    console.log('⚠️  No bot token found. Set BOT_TOKEN in .env or via the admin dashboard Settings.');
   }
-  initBot(token);
-} else {
-  console.log('⚠️  No bot token found. Set BOT_TOKEN in .env or via the admin dashboard Settings.');
+
+  app.listen(PORT, () => {
+    console.log(`🚀 Nesiha Bot Admin Server running on port ${PORT}`);
+  });
 }
 
-app.listen(PORT, () => {
-  console.log(`🚀 Nesiha Bot Admin Server running at http://localhost:${PORT}`);
+start().catch(err => {
+  console.error('❌ Failed to start server:', err);
+  process.exit(1);
 });

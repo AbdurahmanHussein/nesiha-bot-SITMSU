@@ -1,12 +1,11 @@
 const express = require('express');
-const { getDb } = require('../db');
+const { query, queryOne, execute } = require('../db');
 const { sendPollToGroups } = require('../bot');
 const router = express.Router();
 
 // Get all polls
-router.get('/', (req, res) => {
-  const db = getDb();
-  const polls = db.prepare("SELECT * FROM polls ORDER BY created_at DESC").all();
+router.get('/', async (req, res) => {
+  const polls = await query("SELECT * FROM polls ORDER BY created_at DESC");
   res.json(polls.map(p => ({
     ...p,
     options: JSON.parse(p.options || '[]'),
@@ -16,27 +15,25 @@ router.get('/', (req, res) => {
 });
 
 // Get all groups the bot is in
-router.get('/groups', (req, res) => {
-  const db = getDb();
-  const groups = db.prepare("SELECT * FROM groups ORDER BY joined_at DESC").all();
+router.get('/groups', async (req, res) => {
+  const groups = await query("SELECT * FROM groups ORDER BY joined_at DESC");
   res.json(groups);
 });
 
 // Create a poll
-router.post('/', (req, res) => {
-  const db = getDb();
+router.post('/', async (req, res) => {
   const { question, options, is_anonymous, allows_multiple } = req.body;
 
   if (!question || !options || options.length < 2) {
     return res.status(400).json({ error: 'Question and at least 2 options are required' });
   }
 
-  const result = db.prepare(`
+  const result = await queryOne(`
     INSERT INTO polls (question, options, is_anonymous, allows_multiple)
-    VALUES (?, ?, ?, ?)
-  `).run(question, JSON.stringify(options), is_anonymous ? 1 : 0, allows_multiple ? 1 : 0);
+    VALUES ($1, $2, $3, $4) RETURNING id
+  `, [question, JSON.stringify(options), is_anonymous ? 1 : 0, allows_multiple ? 1 : 0]);
 
-  res.json({ id: result.lastInsertRowid });
+  res.json({ id: result.id });
 });
 
 // Send a poll to all groups
@@ -50,9 +47,8 @@ router.post('/:id/send', async (req, res) => {
 });
 
 // Delete a poll
-router.delete('/:id', (req, res) => {
-  const db = getDb();
-  db.prepare("DELETE FROM polls WHERE id = ?").run(req.params.id);
+router.delete('/:id', async (req, res) => {
+  await execute("DELETE FROM polls WHERE id = $1", [req.params.id]);
   res.json({ success: true });
 });
 

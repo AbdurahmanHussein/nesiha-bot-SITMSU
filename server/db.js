@@ -1,40 +1,50 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 
-const DB_PATH = path.join(__dirname, '..', 'nesiha.db');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
-let db;
-
-function getDb() {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    initSchema();
-  }
-  return db;
+// Helper: run a query and return all rows
+async function query(text, params) {
+  const res = await pool.query(text, params);
+  return res.rows;
 }
 
-function initSchema() {
-  db.exec(`
+// Helper: run a query and return the first row (or null)
+async function queryOne(text, params) {
+  const res = await pool.query(text, params);
+  return res.rows[0] || null;
+}
+
+// Helper: run an INSERT/UPDATE/DELETE and return result info
+async function execute(text, params) {
+  const res = await pool.query(text, params);
+  return res;
+}
+
+// Initialize the database schema
+async function initDb() {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
     );
 
     CREATE TABLE IF NOT EXISTS subscribers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       chat_id TEXT UNIQUE NOT NULL,
       username TEXT,
       first_name TEXT,
       last_name TEXT,
       is_active INTEGER DEFAULT 1,
       chat_type TEXT DEFAULT 'private',
-      subscribed_at TEXT DEFAULT (datetime('now'))
+      subscribed_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS programs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       title TEXT NOT NULL,
       title_ar TEXT,
       description TEXT,
@@ -44,21 +54,20 @@ function initSchema() {
       time TEXT,
       category TEXT DEFAULT 'dawah',
       status TEXT DEFAULT 'upcoming',
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS reminders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      program_id INTEGER,
+      id SERIAL PRIMARY KEY,
+      program_id INTEGER REFERENCES programs(id) ON DELETE CASCADE,
       message TEXT NOT NULL,
       remind_at TEXT NOT NULL,
       is_sent INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS submissions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       chat_id TEXT NOT NULL,
       username TEXT,
       first_name TEXT,
@@ -66,21 +75,21 @@ function initSchema() {
       message TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
       admin_response TEXT,
-      responded_at TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
+      responded_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS topics (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       title TEXT NOT NULL,
       title_ar TEXT,
       content TEXT,
       category TEXT DEFAULT 'dawah',
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS polls (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       question TEXT NOT NULL,
       options TEXT NOT NULL,
       is_anonymous INTEGER DEFAULT 1,
@@ -88,49 +97,56 @@ function initSchema() {
       telegram_poll_ids TEXT,
       sent_to_groups TEXT,
       status TEXT DEFAULT 'active',
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS groups (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       chat_id TEXT UNIQUE NOT NULL,
       title TEXT,
-      joined_at TEXT DEFAULT (datetime('now'))
+      joined_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS admin_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       profile_photo TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS command_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       chat_id TEXT NOT NULL,
       command TEXT NOT NULL,
-      executed_at TEXT DEFAULT (datetime('now'))
+      executed_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
   // Insert default settings if not present
-  const insertSetting = db.prepare(
-    'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES ('bot_token', '')
+     ON CONFLICT (key) DO NOTHING`
   );
-  insertSetting.run('bot_token', '');
-  insertSetting.run('welcome_message',
-    '🌿 *Welcome to Nesiha Bot!*\n\nAssalamu Alaikum! You have been subscribed to the Da\'wah & Irshad bot.\n\nUse /help to see available commands.'
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES ('welcome_message', $1)
+     ON CONFLICT (key) DO NOTHING`,
+    ['🌿 *Welcome to Nesiha Bot!*\n\nAssalamu Alaikum! You have been subscribed to the Da\'wah & Irshad bot.\n\nUse /help to see available commands.']
   );
 
   // Initialize default admin if no admins exist
-  const adminCount = db.prepare('SELECT COUNT(*) as count FROM admin_users').get().count;
-  if (adminCount === 0) {
-    const bcrypt = require('bcryptjs');
+  const adminCheck = await pool.query('SELECT COUNT(*) as count FROM admin_users');
+  if (parseInt(adminCheck.rows[0].count) === 0) {
     const salt = bcrypt.genSaltSync(10);
     const hash = bcrypt.hashSync('nesihaAdmin#26', salt);
-    db.prepare('INSERT INTO admin_users (email, password_hash) VALUES (?, ?)').run('abdurahman.h.beriso@gmail.com', hash);
+    await pool.query(
+      'INSERT INTO admin_users (email, password_hash) VALUES ($1, $2)',
+      ['abdurahman.h.beriso@gmail.com', hash]
+    );
+    console.log('✅ Default admin user created.');
   }
+
+  console.log('✅ Database schema initialized.');
 }
 
-module.exports = { getDb };
+module.exports = { query, queryOne, execute, initDb, pool };

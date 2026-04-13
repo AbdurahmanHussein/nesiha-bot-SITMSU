@@ -1,39 +1,35 @@
 const express = require('express');
-const { getDb } = require('../db');
+const { query, queryOne, execute } = require('../db');
 const router = express.Router();
 
 // Get all topics
-router.get('/', (req, res) => {
-  const db = getDb();
-  const topics = db.prepare("SELECT * FROM topics ORDER BY created_at DESC").all();
+router.get('/', async (req, res) => {
+  const topics = await query("SELECT * FROM topics ORDER BY created_at DESC");
   res.json(topics);
 });
 
 // Create a topic
-router.post('/', (req, res) => {
-  const db = getDb();
+router.post('/', async (req, res) => {
   const { title, title_ar, content, category } = req.body;
-  const result = db.prepare(`
+  const result = await queryOne(`
     INSERT INTO topics (title, title_ar, content, category)
-    VALUES (?, ?, ?, ?)
-  `).run(title, title_ar || '', content || '', category || 'dawah');
-  res.json({ id: result.lastInsertRowid });
+    VALUES ($1, $2, $3, $4) RETURNING id
+  `, [title, title_ar || '', content || '', category || 'dawah']);
+  res.json({ id: result.id });
 });
 
 // Update a topic
-router.put('/:id', (req, res) => {
-  const db = getDb();
+router.put('/:id', async (req, res) => {
   const { title, title_ar, content, category } = req.body;
-  db.prepare(`
-    UPDATE topics SET title=?, title_ar=?, content=?, category=? WHERE id=?
-  `).run(title, title_ar || '', content || '', category || 'dawah', req.params.id);
+  await execute(`
+    UPDATE topics SET title=$1, title_ar=$2, content=$3, category=$4 WHERE id=$5
+  `, [title, title_ar || '', content || '', category || 'dawah', req.params.id]);
   res.json({ success: true });
 });
 
 // Delete a topic
-router.delete('/:id', (req, res) => {
-  const db = getDb();
-  db.prepare("DELETE FROM topics WHERE id = ?").run(req.params.id);
+router.delete('/:id', async (req, res) => {
+  await execute("DELETE FROM topics WHERE id = $1", [req.params.id]);
   res.json({ success: true });
 });
 

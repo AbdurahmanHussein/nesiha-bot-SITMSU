@@ -1,24 +1,25 @@
 const express = require('express');
-const { getDb } = require('../db');
+const { query, execute } = require('../db');
 const { initBot } = require('../bot');
 const router = express.Router();
 
 // Get settings
-router.get('/', (req, res) => {
-  const db = getDb();
-  const rows = db.prepare("SELECT * FROM settings").all();
+router.get('/', async (req, res) => {
+  const rows = await query("SELECT * FROM settings");
   const settings = {};
   rows.forEach(r => { settings[r.key] = r.value; });
   res.json(settings);
 });
 
 // Update settings
-router.put('/', (req, res) => {
-  const db = getDb();
+router.put('/', async (req, res) => {
   const { bot_token, welcome_message } = req.body;
 
   if (bot_token !== undefined) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('bot_token', ?)").run(bot_token);
+    await execute(
+      "INSERT INTO settings (key, value) VALUES ('bot_token', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+      [bot_token]
+    );
     // Restart bot with new token
     if (bot_token) {
       initBot(bot_token);
@@ -26,7 +27,10 @@ router.put('/', (req, res) => {
   }
 
   if (welcome_message !== undefined) {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('welcome_message', ?)").run(welcome_message);
+    await execute(
+      "INSERT INTO settings (key, value) VALUES ('welcome_message', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+      [welcome_message]
+    );
   }
 
   res.json({ success: true });

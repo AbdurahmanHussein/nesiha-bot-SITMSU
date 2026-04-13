@@ -1,41 +1,37 @@
 const express = require('express');
-const { getDb } = require('../db');
+const { query, queryOne, execute } = require('../db');
 const { announceProgram } = require('../bot');
 const router = express.Router();
 
 // Get all programs
-router.get('/', (req, res) => {
-  const db = getDb();
-  const programs = db.prepare("SELECT * FROM programs ORDER BY date DESC").all();
+router.get('/', async (req, res) => {
+  const programs = await query("SELECT * FROM programs ORDER BY date DESC");
   res.json(programs);
 });
 
 // Create a program
-router.post('/', (req, res) => {
-  const db = getDb();
+router.post('/', async (req, res) => {
   const { title, title_ar, description, speaker, location, date, time, category } = req.body;
-  const result = db.prepare(`
+  const result = await queryOne(`
     INSERT INTO programs (title, title_ar, description, speaker, location, date, time, category)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, title_ar || '', description || '', speaker || '', location || '', date, time || '', category || 'dawah');
-  res.json({ id: result.lastInsertRowid });
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id
+  `, [title, title_ar || '', description || '', speaker || '', location || '', date, time || '', category || 'dawah']);
+  res.json({ id: result.id });
 });
 
 // Update a program
-router.put('/:id', (req, res) => {
-  const db = getDb();
+router.put('/:id', async (req, res) => {
   const { title, title_ar, description, speaker, location, date, time, category, status } = req.body;
-  db.prepare(`
-    UPDATE programs SET title=?, title_ar=?, description=?, speaker=?, location=?, date=?, time=?, category=?, status=?
-    WHERE id=?
-  `).run(title, title_ar || '', description || '', speaker || '', location || '', date, time || '', category || 'dawah', status || 'upcoming', req.params.id);
+  await execute(`
+    UPDATE programs SET title=$1, title_ar=$2, description=$3, speaker=$4, location=$5, date=$6, time=$7, category=$8, status=$9
+    WHERE id=$10
+  `, [title, title_ar || '', description || '', speaker || '', location || '', date, time || '', category || 'dawah', status || 'upcoming', req.params.id]);
   res.json({ success: true });
 });
 
 // Delete a program
-router.delete('/:id', (req, res) => {
-  const db = getDb();
-  db.prepare("DELETE FROM programs WHERE id = ?").run(req.params.id);
+router.delete('/:id', async (req, res) => {
+  await execute("DELETE FROM programs WHERE id = $1", [req.params.id]);
   res.json({ success: true });
 });
 

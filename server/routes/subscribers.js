@@ -1,11 +1,10 @@
 const express = require('express');
-const { getDb } = require('../db');
+const { query } = require('../db');
 const router = express.Router();
 
 // Get all subscribers
-router.get('/', (req, res) => {
-  const db = getDb();
-  const subscribers = db.prepare("SELECT * FROM subscribers ORDER BY subscribed_at DESC").all();
+router.get('/', async (req, res) => {
+  const subscribers = await query("SELECT * FROM subscribers ORDER BY subscribed_at DESC");
   res.json(subscribers);
 });
 

@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { getDb } = require('./db');
+const { query, queryOne, execute } = require('./db');
 
 let bot = null;
 let nesihaState = {}; // tracks users in nesiha conversation flow
@@ -50,50 +50,48 @@ function initBot(token) {
   }
 }
 
-function logCommand(chatId, command) {
-  const db = getDb();
-  db.prepare('INSERT INTO command_logs (chat_id, command) VALUES (?, ?)').run(chatId, command);
+async function logCommand(chatId, command) {
+  await execute('INSERT INTO command_logs (chat_id, command) VALUES ($1, $2)', [chatId, command]);
 }
 
 function registerHandlers() {
   // /start command
-  bot.onText(/\/start/, (msg) => {
-    const db = getDb();
+  bot.onText(/\/start/, async (msg) => {
     const chatId = String(msg.chat.id);
     const chatType = msg.chat.type;
-    logCommand(chatId, '/start');
+    await logCommand(chatId, '/start');
 
     if (chatType === 'private') {
       // Subscribe user
-      db.prepare(`
+      await execute(`
         INSERT INTO subscribers (chat_id, username, first_name, last_name, is_active, chat_type)
-        VALUES (?, ?, ?, ?, 1, ?)
+        VALUES ($1, $2, $3, $4, 1, $5)
         ON CONFLICT(chat_id) DO UPDATE SET
-          username = excluded.username,
-          first_name = excluded.first_name,
-          last_name = excluded.last_name,
+          username = EXCLUDED.username,
+          first_name = EXCLUDED.first_name,
+          last_name = EXCLUDED.last_name,
           is_active = 1,
-          chat_type = excluded.chat_type
-      `).run(chatId, msg.from.username || '', msg.from.first_name || '', msg.from.last_name || '', chatType);
+          chat_type = EXCLUDED.chat_type
+      `, [chatId, msg.from.username || '', msg.from.first_name || '', msg.from.last_name || '', chatType]);
 
-      const welcomeMsg = db.prepare("SELECT value FROM settings WHERE key = 'welcome_message'").get();
+      const welcomeMsg = await queryOne("SELECT value FROM settings WHERE key = 'welcome_message'");
       const text = welcomeMsg?.value || 'Welcome to Nesiha Bot! Use /help to see commands.';
       bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
     } else if (chatType === 'group' || chatType === 'supergroup') {
       // Track the group
-      db.prepare(`
+      await execute(`
         INSERT INTO groups (chat_id, title)
-        VALUES (?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title
-      `).run(chatId, msg.chat.title || 'Unknown Group');
+        VALUES ($1, $2)
+        ON CONFLICT(chat_id) DO UPDATE SET title = EXCLUDED.title
+      `, [chatId, msg.chat.title || 'Unknown Group']);
 
       bot.sendMessage(chatId, '🌿 *Nesiha Bot* is now active in this group!\n\nUse /help to see available commands.', { parse_mode: 'Markdown' });
     }
   });
 
   // /help command
-  bot.onText(/\/help/, (msg) => {
-    logCommand(String(msg.chat.id), '/help');
+  bot.onText(/\/help/, async (msg) => {
+    await logCommand(String(msg.chat.id), '/help');
     const helpText = `🌿 *Nesiha Bot - Commands*\n
 /start — Subscribe to the bot
 /programs — View upcoming Da'wah programs
@@ -107,12 +105,11 @@ _Da'wah & Irshad Sector_`;
   });
 
   // /programs command
-  bot.onText(/\/programs/, (msg) => {
-    logCommand(String(msg.chat.id), '/programs');
-    const db = getDb();
-    const programs = db.prepare(
+  bot.onText(/\/programs/, async (msg) => {
+    await logCommand(String(msg.chat.id), '/programs');
+    const programs = await query(
       "SELECT * FROM programs WHERE status = 'upcoming' ORDER BY date ASC LIMIT 5"
-    ).all();
+    );
 
     if (programs.length === 0) {
       bot.sendMessage(msg.chat.id, '📅 No upcoming programs at the moment.\n\nStay tuned for new announcements!');
@@ -136,10 +133,9 @@ _Da'wah & Irshad Sector_`;
   });
 
   // /topics command
-  bot.onText(/\/topics/, (msg) => {
-    logCommand(String(msg.chat.id), '/topics');
-    const db = getDb();
-    const topics = db.prepare("SELECT * FROM topics ORDER BY created_at DESC LIMIT 10").all();
+  bot.onText(/\/topics/, async (msg) => {
+    await logCommand(String(msg.chat.id), '/topics');
+    const topics = await query("SELECT * FROM topics ORDER BY created_at DESC LIMIT 10");
 
     if (topics.length === 0) {
       bot.sendMessage(msg.chat.id, '📚 No topics available yet.\n\nCheck back soon!');
@@ -159,8 +155,8 @@ _Da'wah & Irshad Sector_`;
   });
 
   // /nesiha command — ONLY works in private chat
-  bot.onText(/\/nesiha/, (msg) => {
-    logCommand(String(msg.chat.id), '/nesiha');
+  bot.onText(/\/nesiha/, async (msg) => {
+    await logCommand(String(msg.chat.id), '/nesiha');
     const chatId = String(msg.chat.id);
 
     if (msg.chat.type !== 'private') {
@@ -189,9 +185,9 @@ _Da'wah & Irshad Sector_`;
   });
 
   // Handle callback queries (inline keyboard buttons)
-  bot.on('callback_query', (query) => {
-    const chatId = String(query.message.chat.id);
-    const data = query.data;
+  bot.on('callback_query', async (query_data) => {
+    const chatId = String(query_data.message.chat.id);
+    const data = query_data.data;
 
     // Nesiha category selection
     if (data.startsWith('nesiha_cat_')) {
@@ -200,7 +196,7 @@ _Da'wah & Irshad Sector_`;
 
       nesihaState[chatId] = { step: 'message', category };
 
-      bot.answerCallbackQuery(query.id);
+      bot.answerCallbackQuery(query_data.id);
       bot.sendMessage(chatId,
         `✅ Category: *${catLabel}*\n\nNow please type your advice request or question.\n\n_Your message will be kept confidential._`,
         { parse_mode: 'Markdown' }
@@ -209,25 +205,24 @@ _Da'wah & Irshad Sector_`;
   });
 
   // Handle regular messages (for nesiha conversation flow)
-  bot.on('message', (msg) => {
+  bot.on('message', async (msg) => {
     if (msg.text && msg.text.startsWith('/')) return; // ignore commands
     const chatId = String(msg.chat.id);
 
     // Check if user is in nesiha flow
     if (nesihaState[chatId] && nesihaState[chatId].step === 'message') {
-      const db = getDb();
       const state = nesihaState[chatId];
 
-      db.prepare(`
+      await execute(`
         INSERT INTO submissions (chat_id, username, first_name, category, message)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(
+        VALUES ($1, $2, $3, $4, $5)
+      `, [
         chatId,
         msg.from.username || '',
         msg.from.first_name || '',
         state.category,
         msg.text
-      );
+      ]);
 
       delete nesihaState[chatId];
 
@@ -239,12 +234,11 @@ _Da'wah & Irshad Sector_`;
   });
 
   // /unsubscribe command
-  bot.onText(/\/unsubscribe/, (msg) => {
-    logCommand(String(msg.chat.id), '/unsubscribe');
-    const db = getDb();
+  bot.onText(/\/unsubscribe/, async (msg) => {
+    await logCommand(String(msg.chat.id), '/unsubscribe');
     const chatId = String(msg.chat.id);
 
-    db.prepare("UPDATE subscribers SET is_active = 0 WHERE chat_id = ?").run(chatId);
+    await execute("UPDATE subscribers SET is_active = 0 WHERE chat_id = $1", [chatId]);
     bot.sendMessage(chatId,
       '👋 You have been unsubscribed from Nesiha Bot.\n\nYou can always subscribe again by sending /start.\n\n_May Allah guide us all._',
       { parse_mode: 'Markdown' }
@@ -252,16 +246,14 @@ _Da'wah & Irshad Sector_`;
   });
 
   // Track groups when bot is added
-  bot.on('new_chat_members', (msg) => {
-    const botInfo = bot.options;
+  bot.on('new_chat_members', async (msg) => {
     if (msg.new_chat_members?.some(m => m.is_bot)) {
-      const db = getDb();
       const chatId = String(msg.chat.id);
-      db.prepare(`
+      await execute(`
         INSERT INTO groups (chat_id, title)
-        VALUES (?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title
-      `).run(chatId, msg.chat.title || 'Unknown Group');
+        VALUES ($1, $2)
+        ON CONFLICT(chat_id) DO UPDATE SET title = EXCLUDED.title
+      `, [chatId, msg.chat.title || 'Unknown Group']);
     }
   });
 
@@ -288,8 +280,7 @@ async function sendNesihaResponse(chatId, responseText) {
 async function broadcastMessage(message) {
   if (!bot) throw new Error('Bot is not running');
 
-  const db = getDb();
-  const subs = db.prepare("SELECT chat_id FROM subscribers WHERE is_active = 1 AND chat_type = 'private'").all();
+  const subs = await query("SELECT chat_id FROM subscribers WHERE is_active = 1 AND chat_type = 'private'");
 
   let sent = 0, failed = 0;
   for (const sub of subs) {
@@ -299,7 +290,7 @@ async function broadcastMessage(message) {
     } catch (err) {
       failed++;
       if (err.response?.statusCode === 403) {
-        db.prepare("UPDATE subscribers SET is_active = 0 WHERE chat_id = ?").run(sub.chat_id);
+        await execute("UPDATE subscribers SET is_active = 0 WHERE chat_id = $1", [sub.chat_id]);
       }
     }
   }
@@ -310,8 +301,7 @@ async function broadcastMessage(message) {
 async function announceProgram(programId) {
   if (!bot) throw new Error('Bot is not running');
 
-  const db = getDb();
-  const program = db.prepare("SELECT * FROM programs WHERE id = ?").get(programId);
+  const program = await queryOne("SELECT * FROM programs WHERE id = $1", [programId]);
   if (!program) throw new Error('Program not found');
 
   let text = `📢 *New Da'wah Program Announcement!*\n\n`;
@@ -332,12 +322,11 @@ async function announceProgram(programId) {
 async function sendPollToGroups(pollId) {
   if (!bot) throw new Error('Bot is not running');
 
-  const db = getDb();
-  const poll = db.prepare("SELECT * FROM polls WHERE id = ?").get(pollId);
+  const poll = await queryOne("SELECT * FROM polls WHERE id = $1", [pollId]);
   if (!poll) throw new Error('Poll not found');
 
   const options = JSON.parse(poll.options);
-  const groups = db.prepare("SELECT * FROM groups").all();
+  const groups = await query("SELECT * FROM groups");
 
   const pollIds = [];
   const sentGroups = [];
@@ -357,11 +346,11 @@ async function sendPollToGroups(pollId) {
     }
   }
 
-  db.prepare("UPDATE polls SET telegram_poll_ids = ?, sent_to_groups = ? WHERE id = ?").run(
+  await execute("UPDATE polls SET telegram_poll_ids = $1, sent_to_groups = $2 WHERE id = $3", [
     JSON.stringify(pollIds),
     JSON.stringify(sentGroups),
     pollId
-  );
+  ]);
 
   return { sent: sentGroups.length, failed, pollIds };
 }
